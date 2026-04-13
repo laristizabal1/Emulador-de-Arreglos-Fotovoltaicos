@@ -2,6 +2,8 @@
 from dash import html
 from config.hardware import C
 
+
+
 def card(children, title: str = None, style: dict = None) -> html.Div:
     """Contenedor estilizado con borde y título opcional."""
     s = {
@@ -46,3 +48,7 @@ def stat_box(label: str, value: str, unit: str,
               "background": bg or C["white"],
               "border":     f'1px solid {C["border"]}',
               "borderRadius": 12})
+
+def divider() -> html.Hr:
+    """Línea divisoria suave dentro de una card."""
+    return html.Hr(style={"borderColor": C["borderLight"], "margin": "10px 0"})
