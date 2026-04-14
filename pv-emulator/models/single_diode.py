@@ -6,6 +6,10 @@ Implementation following:
     "Comprehensive Approach to Modeling and Simulation of Photovoltaic Arrays."
     IEEE Transactions on Power Electronics, 24(5), 1198-1208.
 
+Adaptation: automatic detection of the effective series cell count (Ns_eff)
+for modules whose reported Ns includes cells in internal parallel sub-strings
+(half-cut, third-cut, shingled, etc.).
+
 All equation references (ec. X) refer to the above paper.
 """
 
@@ -19,30 +23,31 @@ q     = 1.602176634e-19   # C    — electron charge
 T_STC = 298.15            # K    — 25 °C
 G_STC = 1000.0            # W/m²
 
+# Threshold: if Voc_n / Ns falls below this value, the module uses
+# internal parallel sub-strings and Ns must be corrected.
+_VOC_PER_CELL_THRESHOLD = 0.50  # V — standard Si cells are 0.60–0.70 V
+
 
 def _effective_ns(Ns: int, Voc_n: float, Isc_n: float,
                   Vmp_n: float, Imp_n: float, a: float) -> int:
     """Determine the effective series cell count for the thermal voltage.
 
-    For standard modules where Voc/Ns ≥ 0.50 V, Ns is returned as-is.
-
-    For half-cell modules (Voc/Ns < 0.50 V), the physical Ns includes cells
-    in internal parallel sub-strings.  This function finds the largest Ns_eff
-    (≤ Ns) for which the ideal single-diode Pmax (Rs = 0, Rp → ∞) still
-    exceeds the datasheet Pmax_e, ensuring the Villalva iterative algorithm
-    can converge.
+    For modules where Voc_n / Ns < 0.50 V (half-cut, third-cut, shingled),
+    the reported Ns overstates the series count.  This function binary-searches
+    for the largest Ns_eff where the ideal single-diode Pmax (Rs=0, Rp→∞)
+    exceeds Pmax_e by a safety margin, ensuring the iterative algorithm can
+    converge for any module technology.
     """
     if Ns <= 0:
         return 1
-    voc_per_cell = Voc_n / Ns
-    if voc_per_cell >= 0.50:
-        return Ns  # normal module — no correction needed
+    if Voc_n / Ns >= _VOC_PER_CELL_THRESHOLD:
+        return Ns  # standard module — no correction
 
     Pmax_e = Vmp_n * Imp_n
-    target = Pmax_e + 5.0  # margin for Rs/Rp iteration and shunt losses
+    margin = max(Pmax_e * 0.01, 5.0)  # 1 % or 5 W, whichever is larger
+    target = Pmax_e + margin
 
-    # Binary search: find the largest Ns_eff where Pmax_ideal ≥ target
-    lo, hi = max(Ns // 4, 1), Ns
+    lo, hi = max(Ns // 5, 1), Ns
     best = Ns // 2  # fallback
 
     while lo <= hi:
@@ -52,18 +57,17 @@ def _effective_ns(Ns: int, Voc_n: float, Isc_n: float,
         if aVt <= 0:
             hi = mid - 1
             continue
-        denom_exp = math.exp(min(Voc_n / aVt, 500.0)) - 1.0
-        if denom_exp < 1e-30:
+        exp_voc = math.exp(min(Voc_n / aVt, 500.0))
+        if exp_voc <= 1.0:
             hi = mid - 1
             continue
-        I0 = Isc_n / denom_exp
+        I0 = Isc_n / (exp_voc - 1.0)
 
-        # Quick sweep for ideal Pmax (Rs=0, Rp=∞)
+        # Quick ideal sweep (Rs=0, Rp=∞)
         Pmax = 0.0
         for i in range(400):
             V = Voc_n * i / 400.0
-            exp_v = math.exp(min(V / aVt, 500.0))
-            I = Isc_n - I0 * (exp_v - 1.0)
+            I = Isc_n - I0 * (math.exp(min(V / aVt, 500.0)) - 1.0)
             if I > 0:
                 P = V * I
                 if P > Pmax:
@@ -71,15 +75,19 @@ def _effective_ns(Ns: int, Voc_n: float, Isc_n: float,
 
         if Pmax >= target:
             best = mid
-            lo = mid + 1   # try larger Ns_eff (less correction)
+            lo = mid + 1   # try a larger (less aggressive) Ns_eff
         else:
-            hi = mid - 1   # need smaller Ns_eff (more correction)
+            hi = mid - 1   # need smaller Ns_eff
 
     return best
 
 
 class SingleDiodeModel(PVModel):
     """Single-diode PV model with Rs and Rp (Villalva et al. 2009).
+
+    Works with any crystalline-Si or thin-film PV module.  For modules
+    that use internal parallel sub-strings (half-cut, third-cut, shingled),
+    the effective series cell count is detected automatically.
 
     Parameters
     ----------
@@ -96,7 +104,6 @@ class SingleDiodeModel(PVModel):
             params.Ns, params.Voc_n, params.Isc_n,
             params.Vmp_n, params.Imp_n, a
         )
-        # Parameters determined by fit()
         self.Rs: float = 0.0
         self.Rp: float = 0.0
         self.Ipv_stc: float = 0.0
@@ -104,14 +111,14 @@ class SingleDiodeModel(PVModel):
         self.Vt_stc: float = 0.0
 
     # ────────────────────────────────────────────────────────────────
-    # fit() — Iterative determination of Rs and Rp at STC (Fig. 13)
+    # fit()
     # ────────────────────────────────────────────────────────────────
     def fit(self) -> None:
-        """Adjust Rs and Rp at STC using the iterative algorithm of Fig. 13.
+        """Adjust Rs and Rp at STC — iterative algorithm of Fig. 13.
 
-        Implements the Pmax-matching loop: increment Rs from 0 in steps of
-        0.001 Ω, recalculate Rp with ec. 9, evaluate Pmax with Newton-Raphson,
-        and stop when Pmax_model ≥ Pmax_datasheet = Vmp_n × Imp_n.
+        Implements the Pmax-matching loop.  When ec. 9 yields a negative Rp
+        (common for high-fill-factor modules), the solver uses a large Rp
+        and tracks the minimum-error {Rs, Rp} pair as a fallback.
         """
         if self._fitted:
             return
@@ -119,17 +126,18 @@ class SingleDiodeModel(PVModel):
         p = self.p
         Pmax_e = p.Vmp_n * p.Imp_n
 
-        # Thermal voltage at STC
         self.Vt_stc = self._Ns_eff * k * T_STC / q
         Vt = self.Vt_stc
         a  = self.a
-        dT = 0.0
 
         # Initial Rp — ec. 11
-        Rp = (p.Vmp_n / (p.Isc_n - p.Imp_n)
-              - (p.Voc_n - p.Vmp_n) / p.Imp_n)
+        denom_rp = p.Isc_n - p.Imp_n
+        if denom_rp > 0:
+            Rp = p.Vmp_n / denom_rp - (p.Voc_n - p.Vmp_n) / p.Imp_n
+        else:
+            Rp = 1000.0
         if Rp <= 0:
-            Rp = 500.0
+            Rp = 1000.0
 
         Rs = 0.0
         step = 0.001
@@ -140,18 +148,16 @@ class SingleDiodeModel(PVModel):
         best_err = float('inf')
 
         while Rs < max_Rs:
-            # Saturation current — ec. 7 (improved)
-            I0 = (p.Isc_n + p.KI * dT) / (
-                math.exp(min((p.Voc_n + p.KV * dT) / (a * Vt), 500.0)) - 1.0
+            # ec. 7 — saturation current (improved)
+            I0 = (p.Isc_n + p.KI * 0.0) / (
+                math.exp(min((p.Voc_n) / (a * Vt), 500.0)) - 1.0
             )
 
-            # Photovoltaic current — ec. 10 refinement
-            Ipv_n = ((Rp + Rs) / Rp) * p.Isc_n if Rp > 0 else p.Isc_n
-            Ipv = (Ipv_n + p.KI * dT)
+            # ec. 10 — photovoltaic current refinement
+            Ipv = ((Rp + Rs) / Rp) * p.Isc_n if Rp > 0 else p.Isc_n
 
-            # Rp from ec. 9
-            exp_arg = min((p.Vmp_n + p.Imp_n * Rs) / (a * Vt), 500.0)
-            exp_mpp = math.exp(exp_arg)
+            # ec. 9 — Rp as function of Rs
+            exp_mpp = math.exp(min((p.Vmp_n + p.Imp_n * Rs) / (a * Vt), 500.0))
             denom = (p.Vmp_n * Ipv
                      - p.Vmp_n * I0 * exp_mpp
                      + p.Vmp_n * I0
@@ -161,16 +167,14 @@ class SingleDiodeModel(PVModel):
                 if Rp_new > 0:
                     Rp = Rp_new
 
-            # Evaluate Pmax by sweeping V
+            # Sweep I-V curve for Pmax
             Pmax_m = self._calc_pmax(Ipv, I0, Rs, Rp, Vt, a, p.Voc_n)
 
             err = abs(Pmax_m - Pmax_e)
             if err < best_err:
                 best_err = err
-                best_Rs = Rs
-                best_Rp = Rp
-                best_Ipv = Ipv
-                best_I0 = I0
+                best_Rs, best_Rp = Rs, Rp
+                best_Ipv, best_I0 = Ipv, I0
 
             if Pmax_m >= Pmax_e:
                 break
@@ -196,14 +200,12 @@ class SingleDiodeModel(PVModel):
             return MPPResult(0.0, 0.0, 0.0)
 
         Ipv, I0, Rs, Rp, Vt, a, Voc_est = self._scale_to_conditions(
-            G_poa, T_cell, Ns_arr, Np_arr
-        )
+            G_poa, T_cell, Ns_arr, Np_arr)
 
         n_pts = 500
         V_arr = np.linspace(0.0, Voc_est * 1.05, n_pts)
         I_arr = np.array([
-            self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a) for v in V_arr
-        ])
+            self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a) for v in V_arr])
         I_arr = np.clip(I_arr, 0.0, None)
 
         P_arr = V_arr * I_arr
@@ -219,25 +221,22 @@ class SingleDiodeModel(PVModel):
     def iv_curve(self, G_poa: float, T_cell: float,
                  Ns_arr: int = 1, Np_arr: int = 1,
                  n_pts: int = 200) -> MPPResult:
-        """Return the full I-V curve and MPP. Implements ec. 3 via Newton-Raphson."""
+        """Return the full I-V curve and MPP. Implements ec. 3 via NR."""
         if G_poa < 5:
             return MPPResult(0.0, 0.0, 0.0)
 
         Ipv, I0, Rs, Rp, Vt, a, Voc_est = self._scale_to_conditions(
-            G_poa, T_cell, Ns_arr, Np_arr
-        )
+            G_poa, T_cell, Ns_arr, Np_arr)
 
         V_arr = np.linspace(0.0, Voc_est * 1.05, n_pts)
         I_arr = np.array([
-            self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a) for v in V_arr
-        ])
+            self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a) for v in V_arr])
         I_arr = np.clip(I_arr, 0.0, None)
 
         P_arr = V_arr * I_arr
         idx = int(np.argmax(P_arr))
         Vmp = float(V_arr[idx])
         Imp = float(I_arr[idx])
-
         return MPPResult(round(Vmp, 3), round(Imp, 3), round(Vmp * Imp, 1),
                          V_arr, I_arr)
 
@@ -246,7 +245,7 @@ class SingleDiodeModel(PVModel):
     # ================================================================
 
     def _scale_to_conditions(self, G_poa, T_cell, Ns_arr, Np_arr):
-        """Scale module parameters to operating conditions and array.
+        """Scale module parameters to (G, T) and array dimensions.
 
         Implements ec. 4 (Ipv), ec. 7 (I0), and array scaling.
         """
@@ -257,18 +256,15 @@ class SingleDiodeModel(PVModel):
 
         Vt_mod = self._Ns_eff * k * T / q
 
-        # ec. 10 + ec. 4
         Ipv_n = ((self.Rp + self.Rs) / self.Rp) * p.Isc_n if self.Rp > 0 else p.Isc_n
         Ipv = (Ipv_n + p.KI * dT) * (G_poa / G_STC)
 
-        # ec. 7
         Voc_T = p.Voc_n + p.KV * dT
         denom_exp = math.exp(min(Voc_T / (a * Vt_mod), 500.0)) - 1.0
         if denom_exp < 1e-30:
             denom_exp = 1e-30
         I0 = (p.Isc_n + p.KI * dT) / denom_exp
 
-        # Array scaling
         Ipv_arr = Ipv * Np_arr
         I0_arr  = I0  * Np_arr
         Rs_arr  = self.Rs * Ns_arr / max(Np_arr, 1)
@@ -281,17 +277,12 @@ class SingleDiodeModel(PVModel):
     @staticmethod
     def _newton_raphson(V, Ipv, I0, Rs, Rp, Vt, a,
                         tol=1e-9, max_iter=50):
-        """Solve ec. 3 implicitly for I at given V using Newton-Raphson.
-
-        f(I)  = I − Ipv + I0·(exp((V+I·Rs)/(a·Vt)) − 1) + (V+I·Rs)/Rp
-        df/dI = 1 + I0·Rs/(a·Vt)·exp(…) + Rs/Rp
-        """
+        """Solve ec. 3 implicitly for I at given V (Newton-Raphson)."""
         I = (Ipv - V / Rp) if Rp > 0 else Ipv
         I = max(I, 0.0)
         aVt = a * Vt
         if aVt <= 0:
             return max(I, 0.0)
-
         for _ in range(max_iter):
             z = V + I * Rs
             exp_x = math.exp(min(z / aVt, 500.0))
@@ -306,13 +297,12 @@ class SingleDiodeModel(PVModel):
         return max(I, 0.0)
 
     def _calc_pmax(self, Ipv, I0, Rs, Rp, Vt, a, Voc):
-        """Sweep the module I-V curve and return the peak power."""
-        n_pts = 500
-        V_arr = np.linspace(0.0, Voc, n_pts)
+        """Sweep module I-V curve and return peak power."""
         Pmax = 0.0
-        for v in V_arr:
-            i = max(self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a), 0.0)
-            pv = v * i
-            if pv > Pmax:
-                Pmax = pv
+        for i in range(500):
+            v = Voc * i / 500.0
+            i_val = max(self._newton_raphson(v, Ipv, I0, Rs, Rp, Vt, a), 0.0)
+            p = v * i_val
+            if p > Pmax:
+                Pmax = p
         return Pmax

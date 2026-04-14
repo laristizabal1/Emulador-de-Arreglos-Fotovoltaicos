@@ -1,24 +1,35 @@
 """
 models/
 =======
-Modelos eléctricos equivalentes del panel fotovoltaico.
+Modelos electricos equivalentes del panel fotovoltaico.
 
-    base         — ABC PVModel + dataclasses ModuleParams, MPPResult
-    simplified   — modelo actual (ecs. 4–5 del documento)      ← operativo
-    single_diode — Villalva et al. 2009 (IEEE Trans. Power El.) ← Fase 1
-    two_diode    — Ishaque et al. 2011 (Sol. Energy Mater.)     ← Fase 1
-    thermal      — modelos NOCT y Faiman de temperatura de celda
+    base          — ABC PVModel + dataclasses ModuleParams, MPPResult
+    panel_factory — panel_from_datasheet(): convierte datasheet -> ModuleParams
+                    con auto-deteccion de convencion de coeficientes (%/C o A/C)
+    simplified    — modelo simplificado (ecs. 4-5 del documento)
+    single_diode  — Villalva et al. 2009 — cualquier tecnologia cristalina
+    two_diode     — Ishaque et al. 2011  — mayor precision a baja irradiancia
+    thermal       — modelos NOCT y Faiman de temperatura de celda
 
-Uso estándar:
-    from models.base       import ModuleParams
-    from models.simplified import SimplifiedModel
+Uso estandar:
+    from models.panel_factory import panel_from_datasheet
+    from models.single_diode  import SingleDiodeModel
 
-    params = ModuleParams(Isc_n=13.5, Voc_n=49.8, Imp_n=13.35,
-                          Vmp_n=41.2, KI=0.00675, KV=-0.14442, Ns=144)
-    model  = SimplifiedModel(params)
+    # Coeficientes en A/C y V/C (absolutos)
+    params = panel_from_datasheet(
+        Isc=13.5, Voc=49.8, Imp=13.35, Vmp=41.2,
+        KI=0.00675, KV=-0.14442, Ns=144
+    )
+
+    # Coeficientes en %/C (relativos) — auto-detectados
+    params = panel_from_datasheet(
+        Isc=12.42, Voc=52.1, Imp=11.80, Vmp=43.7,
+        KI=0.04, KV=-0.25, Ns=144
+    )
+
+    model = SingleDiodeModel(params)
     model.fit()
     mpp = model.get_mpp(G_poa=800, T_cell=35)
-    print(mpp.Vmp, mpp.Imp, mpp.Pmp)
 """
 from models.base import PVModel, ModuleParams, MPPResult
 

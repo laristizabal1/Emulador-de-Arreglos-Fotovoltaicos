@@ -12,7 +12,6 @@ Todos los outputs los llenan los callbacks de scpi_cb.py.
 """
 
 from dash import dcc, html
-from comm.scpi import list_ports
 from config.hardware import C
 from hmi.layout.components import card
 
@@ -29,8 +28,8 @@ def tab_scpi() -> html.Div:
 
 def _panel_control() -> html.Div:
     """Columna izquierda: conexión, control manual y ejecución de perfil."""
+    from comm.scpi import list_ports   # importacion local
     ports = list_ports()
-
     return card([
 
         # ── Selección de puerto ───────────────────────────────────────────────

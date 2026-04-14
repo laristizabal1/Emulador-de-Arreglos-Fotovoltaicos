@@ -69,12 +69,13 @@ def register(app):
                           style={"color": C["dim"]})
             ]
         d = get_params(module_key)
-        Pmax = round(d["Vmp_n"] * d["Imp_n"], 1)
+        # Calcular Pmax usando las claves nuevas del catalogo (Vmp, Imp)
+        Pmax = round(d["Vmp"] * d["Imp"], 1)
         badge = html.Span(
-            f"Pmax STC = {Pmax} W  |  Voc {d['Voc_n']} V  |  Isc {d['Isc_n']} A",
+            f"Pmax STC = {Pmax} W  |  Voc {d['Voc']} V  |  Isc {d['Isc']} A",
             style={"color": C["accentDark"], "fontWeight": 600},
         )
-        return (d["Voc_n"], d["Isc_n"], d["Vmp_n"], d["Imp_n"],
+        return (d["Voc"], d["Isc"], d["Vmp"], d["Imp"],
                 d["KV"], d["KI"], d["Ns"], d["noct"], badge)
 
     # 3. Mostrar/ocultar sliders custom
@@ -153,25 +154,37 @@ def register(app):
         # Tabla de parametros
         if module_key and module_key != CUSTOM_MODULE_KEY:
             d = get_params(module_key)
+            # Calcular KI/KV absolutos via panel_from_datasheet para mostrar
+            from models.panel_factory import panel_from_datasheet
+            mp = panel_from_datasheet(
+                Isc=d["Isc"], Voc=d["Voc"], Imp=d["Imp"], Vmp=d["Vmp"],
+                KI=d["KI"], KV=d["KV"], Ns=d["Ns"], noct=d["noct"]
+            )
+            d_show = {"Voc": d["Voc"], "Isc": d["Isc"],
+                      "Vmp": d["Vmp"], "Imp": d["Imp"],
+                      "KV": round(mp.KV, 5), "KI": round(mp.KI, 6),
+                      "Ns": d["Ns"], "noct": d["noct"]}
         else:
-            d = {"Voc_n": Voc, "Isc_n": Isc, "Vmp_n": Vmp, "Imp_n": Imp,
-                 "KV": betaVoc or -0.13, "KI": alphaIsc or 0.0005,
-                 "Ns": Ns_cells or 144, "noct": noct or 45}
+            d_show = {"Voc": Voc or 47.0, "Isc": Isc or 13.5,
+                      "Vmp": Vmp or 39.0, "Imp": Imp or 13.0,
+                      "KV": betaVoc or -0.13, "KI": alphaIsc or 0.0005,
+                      "Ns": Ns_cells or 144, "noct": noct or 45}
+            d = d_show
 
-        Pmax_mod = round(d["Vmp_n"] * d["Imp_n"], 1)
-        FF = round(Pmax_mod / max(d["Voc_n"] * d["Isc_n"], 0.001), 3)
+        Pmax_mod = round(d_show["Vmp"] * d_show["Imp"], 1)
+        FF = round(Pmax_mod / max(d_show["Voc"] * d_show["Isc"], 0.001), 3)
 
         filas = [
-            ("Voc STC",    f"{d['Voc_n']} V"),
-            ("Isc STC",    f"{d['Isc_n']} A"),
-            ("Vmp STC",    f"{d['Vmp_n']} V"),
-            ("Imp STC",    f"{d['Imp_n']} A"),
+            ("Voc STC",    f"{d_show['Voc']} V"),
+            ("Isc STC",    f"{d_show['Isc']} A"),
+            ("Vmp STC",    f"{d_show['Vmp']} V"),
+            ("Imp STC",    f"{d_show['Imp']} A"),
             ("Pmax STC",   f"{Pmax_mod} W"),
             ("FF",         f"{FF}"),
-            ("beta Voc",   f"{d['KV']} V/C"),
-            ("alpha Isc",  f"{d['KI']} A/C"),
-            ("Ns (celdas)",f"{d['Ns']}"),
-            ("NOCT",       f"{d['noct']} C"),
+            ("beta Voc",   f"{d_show['KV']} V/C"),
+            ("alpha Isc",  f"{d_show['KI']} A/C"),
+            ("Ns (celdas)",f"{d_show['Ns']}"),
+            ("NOCT",       f"{d_show['noct']} C"),
         ]
         params_table = html.Table([
             html.Tbody([
