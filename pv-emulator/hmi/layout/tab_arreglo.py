@@ -19,14 +19,14 @@ from hmi.layout.components  import card, divider
 
 # Sliders de parámetros eléctricos del módulo (solo visibles en modo custom)
 _SLIDERS_MODULO = [
-    ("Voc STC",    "sl-Voc",      30,   60,  0.5,   49.8,  " V",    C["red"]),
-    ("Isc STC",    "sl-Isc",       5,   20,  0.1,   13.5,  " A",    C["blue"]),
-    ("Vmp STC",    "sl-Vmp",      20,   55,  0.5,   41.2,  " V",    C["red"]),
-    ("Imp STC",    "sl-Imp",       4,   18,  0.1,   13.35, " A",    C["blue"]),
-    ("beta Voc",   "sl-betaVoc", -0.3,   0,  0.01,  -0.13, " V/C",  C["dim"]),
-    ("alpha Isc",  "sl-alphaIsc",  0, 0.005, 0.0001, 0.0005," A/C", C["dim"]),
-    ("Ns (celdas)","sl-Ns-cells", 36, 200,   1,    144,   "",      C["dim"]),
-    ("NOCT",       "sl-noct",     40,   50,   1,     45,   " C",    C["accent"]),
+    ("Voc STC",    "sl-Voc",      0,   60,  0.1,   49.8,  " V",    C["red"]),
+    ("Isc STC",    "sl-Isc",       0,   20,  0.1,   13.5,  " A",    C["blue"]),
+    ("Vmp STC",    "sl-Vmp",      0,   55,  0.1,   41.2,  " V",    C["red"]),
+    ("Imp STC",    "sl-Imp",       0,   18,  0.1,   13.35, " A",    C["blue"]),
+    ("beta Voc",   "sl-betaVoc", -0.3,   0,  0.001,  -0.13, " V/C",  C["dim"]),
+    ("alpha Isc",  "sl-alphaIsc",  0, 1, 0.0001, 0.0005," A/C", C["dim"]),
+    ("Ns (celdas)","sl-Ns-cells", 0, 200,   1,    144,   "",      C["dim"]),
+    ("NOCT",       "sl-noct",     0,   50,   1,     45,   " C",    C["accent"]),
 ]
 
 # Sliders de configuración del arreglo (siempre visibles)

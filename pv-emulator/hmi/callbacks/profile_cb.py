@@ -12,6 +12,7 @@ import plotly.graph_objects as go
 from dash import Input, Output, State, html, no_update
 
 from config.hardware        import C, DT_MIN
+from config.locations       import LOCATIONS
 from config.modules_catalog import CUSTOM_MODULE_KEY, get_params, to_module_params
 from models.simplified      import SimplifiedModel
 from models.single_diode    import SingleDiodeModel
@@ -39,7 +40,8 @@ def _make_empty_fig(height=180):
 def register(app):
 
     @app.callback(
-        Output("store-profile",    "data"),
+        Output("store-profile",      "data"),
+        Output("store-profile-meta", "data"),   # metadata para el JSON de persistencia
         Output("profile-stats",    "children"),
         Output("chart-vi",         "figure"),
         Output("chart-pt",         "figure"),
@@ -60,10 +62,11 @@ def register(app):
         Input("dd-model",      "value"),
         Input("dd-strategy",   "value"),
         Input("inp-dt",        "value"),
+        State("store-loc-idx", "data"),
     )
     def update_profile(nasa_data, module_key, Ns, Np,
                        Voc, Isc, Vmp, Imp, beta, alpha, Ns_cells, noct,
-                       tilt, model_key, strategy, dt):
+                       tilt, model_key, strategy, dt, loc_idx):
 
         if not nasa_data:
             warn = html.Div(
@@ -73,7 +76,7 @@ def register(app):
                        "color": C["red"], "marginBottom": 12,
                        "fontWeight": 600, "fontSize": 13},
             )
-            return no_update, [], _make_empty_fig(190), _make_empty_fig(170), warn
+            return no_update, no_update, [], _make_empty_fig(190), _make_empty_fig(170), warn
 
         # ── Construir ModuleParams ───────────────────────────────────────────
         # Catalogo: usa panel_from_datasheet con auto-deteccion de convencion
@@ -109,7 +112,7 @@ def register(app):
         dt_ms   = max(dt or 1000, DT_MIN)
 
         if not profile:
-            return [], [], _make_empty_fig(190), _make_empty_fig(170), html.Div()
+            return [], {}, [], _make_empty_fig(190), _make_empty_fig(170), html.Div()
 
         # ── Metricas ─────────────────────────────────────────────────────────
         peak_P  = max(d["P_set"] for d in profile)
@@ -163,7 +166,78 @@ def register(app):
             yaxis=dict(tickfont=dict(size=9)),
             yaxis2=dict(overlaying="y", side="right", tickfont=dict(size=9)))
 
-        return profile, stats, fig_vi, fig_pt, html.Div()
+        # ── Metadata para persistencia JSON ──────────────────────────────────
+        _STRATEGY_LABELS = {
+            "full":    "Serie completa",
+            "day":     "Ventana diurna 06:00–18:00",
+            "average": "Día promedio estadístico",
+        }
+        _MODEL_LABELS = {
+            "simplified":   "Simplificado",
+            "single_diode": "Un diodo (Villalva 2009)",
+            "two_diode":    "Dos diodos (Ishaque 2011)",
+        }
+        loc = LOCATIONS[loc_idx or 0] if loc_idx is not None else LOCATIONS[0]
+
+        # Fechas del rango NASA — extraídas del header que devuelve la API
+        nasa_start = nasa_fin = ""
+        if isinstance(nasa_data, dict):
+            hdr = nasa_data.get("header", {})
+            s, e = hdr.get("start", ""), hdr.get("end", "")
+            if len(s) == 8:
+                nasa_start = f"{s[:4]}-{s[4:6]}-{s[6:]}"
+            if len(e) == 8:
+                nasa_fin = f"{e[:4]}-{e[4:6]}-{e[6:]}"
+
+        # Parámetros del módulo — catálogo o custom (sliders)
+        if module_key and module_key != CUSTOM_MODULE_KEY:
+            modulo_params = {"fuente": "catalogo", "clave": module_key}
+        else:
+            modulo_params = {
+                "fuente":    "custom",
+                "Voc_V":     Voc   or 0,
+                "Isc_A":     Isc   or 0,
+                "Vmp_V":     Vmp   or 0,
+                "Imp_A":     Imp   or 0,
+                "betaVoc_V_C": beta  or 0,
+                "alphaIsc_A_C": alpha or 0,
+                "Ns_celdas": int(Ns_cells or 36),
+                "NOCT_C":    noct  or 45,
+            }
+
+        # Perfil de consignas teóricas completo — permite comparar con mediciones
+        perfil_consignas = [
+            {
+                "paso":   i,
+                "label":  d.get("label", ""),
+                "V_set":  d.get("V_set", 0),
+                "I_set":  d.get("I_set", 0),
+                "P_set":  d.get("P_set", 0),
+                "Tcell":  d.get("Tcell", 0),
+                "Gpoa":   d.get("Gpoa",  0),
+            }
+            for i, d in enumerate(profile)
+        ]
+
+        meta = {
+            "ciudad":          loc.get("name", "Desconocida"),
+            "lat":             loc.get("lat"),
+            "lon":             loc.get("lon"),
+            "nasa_rango_inicio": nasa_start,
+            "nasa_rango_fin":    nasa_fin,
+            "estrategia":      _STRATEGY_LABELS.get(strategy or "day", strategy),
+            "modelo":          _MODEL_LABELS.get(model_key or "simplified", model_key),
+            "modelo_key":      model_key or "simplified",
+            "modulo":          modulo_params,
+            "Ns_arreglo":      Ns or 1,
+            "Np_arreglo":      Np or 1,
+            "tilt_deg":        tilt or 10.0,
+            "dt_ms":           max(dt or 1000, DT_MIN),
+            "n_pasos":         len(profile),
+            "perfil_consignas": perfil_consignas,  # curva teórica completa
+        }
+
+        return profile, meta, stats, fig_vi, fig_pt, html.Div()
 
     @app.callback(
         Output("download-csv", "data"),

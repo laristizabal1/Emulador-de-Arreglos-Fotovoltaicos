@@ -498,6 +498,37 @@ class ScpiModbusBridge:
         finally:
             loop.close()
 
+    def start_shared(self, ser) -> None:
+        """
+        Inicia el bridge reutilizando un serial.Serial ya abierto por
+        SCPIController — evita PermissionError por doble apertura de COM.
+
+        Usar en scpi_cb.py:
+            bridge.start_shared(_controller._ser)
+        """
+        self.ps.ser = ser
+        self._build_datastore()
+        self._stop.clear()
+        self.running = True
+
+        threading.Thread(
+            target=self._poll_loop,
+            daemon=True,
+            name='BridgePoll',
+        ).start()
+
+        threading.Thread(
+            target=self._run_modbus_server,
+            daemon=True,
+            name='BridgeTCP',
+        ).start()
+
+        log.info(
+            f'Bridge activo (serial compartido) — '
+            f'poll {self.cfg.poll_interval_ms} ms'
+        )
+
+    # -- start() original (abre su propio COM) --------------------------------
     # -- API publica ----------------------------------------------------------
     def start(self) -> None:
         """

@@ -2,13 +2,17 @@
 hmi/layout/tab_scpi.py
 =======================
 Layout del Tab 3 — SCPI / Control en tiempo real.
-Migrado de tab_scpi() en app.py.
 
 Columna izquierda : selección de puerto, control manual OUTP ON/OFF,
                     botones EJECUTAR / DETENER perfil, barra de progreso.
 Columna derecha   : live readout (V, I, P actuales), terminal SCPI oscura.
 
 Todos los outputs los llenan los callbacks de scpi_cb.py.
+
+CORRECCIONES:
+    - Eliminado bloque duplicado de Δt/Pasos/Duración/botones que generaba
+      dos secciones "Ejecución del perfil" y dos instancias del id "inp-dt".
+    - Los ids exec-n-steps, exec-duration e inp-dt aparecen una sola vez.
 """
 
 from dash import dcc, html
@@ -83,16 +87,54 @@ def _panel_control() -> html.Div:
         html.Hr(style={"borderColor": C["border"]}),
 
         # ── Ejecución de perfil ───────────────────────────────────────────────
-        _section_label("Ejecución del perfil"),
+        # FIX: bloque único — eliminada la segunda instancia duplicada que
+        # causaba dos secciones visibles y conflicto de ids en Dash.
+        _section_label("Ejecucion del perfil PV"),
         html.Div(id="exec-step-info",
                  style={"fontSize": 11, "color": C["dim"], "marginBottom": 8}),
+
+        # Control de delta de tiempo + info de pasos y duración
+        html.Div([
+            html.Div([
+                html.Div("Δt por paso (ms)",
+                         style={"fontSize": 11, "color": C["dim"],
+                                "marginBottom": 3}),
+                dcc.Input(
+                    id="inp-dt",
+                    type="number",
+                    value=1000,
+                    min=200,
+                    max=60000,
+                    step=100,
+                    style=_input_style(),
+                ),
+            ], style={"flex": 1}),
+            html.Div([
+                html.Div("Pasos totales",
+                         style={"fontSize": 11, "color": C["dim"],
+                                "marginBottom": 3}),
+                html.Div(id="exec-n-steps",
+                         style={"fontSize": 13, "fontWeight": 700,
+                                "fontFamily": "monospace",
+                                "color": C["textMed"], "padding": "6px 0"}),
+            ], style={"flex": 1}),
+            html.Div([
+                html.Div("Duración total",
+                         style={"fontSize": 11, "color": C["dim"],
+                                "marginBottom": 3}),
+                html.Div(id="exec-duration",
+                         style={"fontSize": 13, "fontWeight": 700,
+                                "fontFamily": "monospace",
+                                "color": C["textMed"], "padding": "6px 0"}),
+            ], style={"flex": 1}),
+        ], style={"display": "flex", "gap": 10, "marginBottom": 10}),
 
         html.Div([
             html.Button("EJECUTAR PERFIL", id="btn-exec-start", n_clicks=0,
                         style=_btn_style(C["accent"], "#fff", "none",
                                          font_size=12, padding="10px")),
             html.Button("DETENER",         id="btn-exec-stop",  n_clicks=0,
-                        style=_btn_style(C["red"],    "#fff", "none",
+                        style=_btn_style(C["red"],   "#fff", "none",
                                          font_size=12, padding="10px")),
         ], style={"display": "flex", "gap": 8, "marginBottom": 10}),
 
@@ -119,8 +161,62 @@ def _panel_control() -> html.Div:
             ],
         ),
 
-        # Interval para polling de progreso (activado por toggle_exec)
-        dcc.Interval(id="interval-exec", interval=300, disabled=True),
+        html.Hr(style={"borderColor": C["border"]}),
+
+        # ── Bridge Modbus TCP ─────────────────────────────────────────────────
+        _section_label("Bridge Modbus TCP"),
+
+        # Host y puerto Modbus
+        html.Div([
+            html.Div([
+                html.Div("Host (escuchar en)",
+                         style={"fontSize": 11, "color": C["dim"], "marginBottom": 3}),
+                dcc.Input(
+                    id="inp-modbus-host",
+                    type="text",
+                    value="0.0.0.0",
+                    debounce=True,
+                    style=_input_style(),
+                ),
+            ], style={"flex": 2}),
+            html.Div([
+                html.Div("Puerto TCP",
+                         style={"fontSize": 11, "color": C["dim"], "marginBottom": 3}),
+                dcc.Input(
+                    id="inp-modbus-port",
+                    type="number",
+                    value=502,
+                    min=1,
+                    max=65535,
+                    style=_input_style(),
+                ),
+            ], style={"flex": 1}),
+            html.Div([
+                html.Div("Poll (ms)",
+                         style={"fontSize": 11, "color": C["dim"], "marginBottom": 3}),
+                dcc.Input(
+                    id="inp-bridge-poll",
+                    type="number",
+                    value=20,
+                    min=20,
+                    max=5000,
+                    step=10,
+                    style=_input_style(),
+                ),
+            ], style={"flex": 1}),
+        ], style={"display": "flex", "gap": 8, "marginBottom": 10}),
+
+        html.Div([
+            html.Button("Iniciar Bridge", id="btn-bridge-start", n_clicks=0,
+                        style=_btn_style(C["accent"], "#fff", "none",
+                                         font_size=11, padding="8px")),
+            html.Button("Detener Bridge", id="btn-bridge-stop",  n_clicks=0,
+                        style=_btn_style(C["red"],   "#fff", "none",
+                                         font_size=11, padding="8px")),
+        ], style={"display": "flex", "gap": 8, "marginBottom": 8}),
+
+        html.Div(id="bridge-status",
+                 style={"fontSize": 11, "marginBottom": 10}),
 
     ], title="Control SCPI — EA-PS 10060-170")
 
@@ -129,13 +225,51 @@ def _panel_monitor() -> html.Div:
     """Columna derecha: live readout y terminal de comandos SCPI."""
     return card([
 
-        # Live readout: V, I, P actuales (relleno por update_exec_progress)
+        # Live readout: consignas V_set, I_set, P_set (relleno por update_exec_progress)
+        html.Div("Consignas enviadas (set)", style={
+            "fontSize": 10, "fontWeight": 800, "color": C["dim"],
+            "textTransform": "uppercase", "letterSpacing": 1, "marginBottom": 6,
+        }),
         html.Div(
             id="live-readout",
             style={
                 "display":             "grid",
                 "gridTemplateColumns": "1fr 1fr 1fr",
                 "gap":                 10,
+                "marginBottom":        14,
+            },
+        ),
+
+        # Mediciones reales: V_meas, I_meas, P_meas desde MEAS:VOLT?/CURR?/POW?
+        html.Div("Mediciones reales (MEAS)", style={
+            "fontSize": 10, "fontWeight": 800, "color": C["dim"],
+            "textTransform": "uppercase", "letterSpacing": 1, "marginBottom": 6,
+        }),
+        html.Div(
+            id="live-measured",
+            style={
+                "display":             "grid",
+                "gridTemplateColumns": "1fr 1fr 1fr",
+                "gap":                 10,
+                "marginBottom":        14,
+            },
+        ),
+
+        # Bridge Modbus readout (relleno por update_bridge_status)
+        html.Div("Mediciones Bridge Modbus", style={
+            "fontSize":      10,
+            "fontWeight":    800,
+            "color":         C["dim"],
+            "textTransform": "uppercase",
+            "letterSpacing": 1,
+            "marginBottom":  6,
+        }),
+        html.Div(
+            id="bridge-modbus-readout",
+            style={
+                "display":             "grid",
+                "gridTemplateColumns": "1fr 1fr 1fr",
+                "gap":                 8,
                 "marginBottom":        14,
             },
         ),
@@ -166,8 +300,6 @@ def _panel_monitor() -> html.Div:
             id="scpi-summary",
             style={"marginTop": 8, "fontSize": 10, "color": C["dim"]},
         ),
-
-        dcc.Interval(id="interval-live", interval=500, disabled=True),
 
     ], title="Monitor en tiempo real")
 

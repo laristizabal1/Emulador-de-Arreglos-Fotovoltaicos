@@ -21,6 +21,10 @@ Instalar dependencias:
 Correr:
     python app.py            # modo navegador  → http://localhost:8050
     python app.py --desktop  # modo escritorio (requiere: pip install pywebview)
+
+NOTA: app.py no requirió cambios. Las correcciones están en:
+    - comm/scpi.py          (SYST:LOCK ON, RLock, disconnect limpio)
+    - hmi/callbacks/scpi_cb.py  (set_output_fast, terminal corregida)
 """
 
 import sys
@@ -53,11 +57,12 @@ cb.register_all(app)
 app.layout = html.Div([
 
     # Stores — memoria del cliente
-    dcc.Store(id="store-nasa",       storage_type="memory"),
-    dcc.Store(id="store-profile",    storage_type="memory"),
-    dcc.Store(id="store-loc-idx",    data=0),
-    dcc.Store(id="store-scpi-log",   data=[]),
-    dcc.Store(id="store-exec-state", data={"running": False, "step": 0}),
+    dcc.Store(id="store-nasa",         storage_type="memory"),
+    dcc.Store(id="store-profile",      storage_type="memory"),
+    dcc.Store(id="store-profile-meta", storage_type="memory"),   # metadata del perfil activo
+    dcc.Store(id="store-loc-idx",      data=0),
+    dcc.Store(id="store-scpi-log",     data=[]),
+    dcc.Store(id="store-exec-state",   data={"running": False, "step": 0}),
 
     # Intervals — polling
     dcc.Interval(id="interval-exec", interval=300, disabled=True),
@@ -95,7 +100,6 @@ app.layout = html.Div([
     }),
 
     # Tabs
-    # Tabs — contenido estático (todos renderizados al inicio, visibilidad por CSS)
     dcc.Tabs(
         id="main-tabs", value="tab-0",
         children=[
